@@ -23,7 +23,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # =========================
 pipeline = rs.pipeline()
 config = rs.config()
-config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, FPS)
+config.enable_stream(rs.stream.color, rs.format.bgr8, FPS)
 
 pipeline.start(config)
 
