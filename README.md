@@ -7,7 +7,7 @@ mmWave radar and a depth camera.
 
 The goal of the project is to improve robustness over single-sensor systems by
 combining:
-- radar-based motion detection and ranging, and
+- radar-based motion detection and ranging.
 - vision-based person detection and distance estimation.
 
 The system is designed to handle common indoor challenges such as occlusion,
@@ -37,6 +37,8 @@ The project is composed of three main components:
 ## Repository Structure
 - `Standalone_Demos/` – Standalone demos for individual sensors and algorithms
 - `Camera_&_Fusion_Demos/` – Integrated fusion system combining radar and camera inputs
+- `Raw_Data_Collection/` – Raw sensor datasets and logging scripts
+- `Machine_Learning/` – Planned ML development (documentation only)
 
 See the README files inside each folder for setup and usage instructions.
 
