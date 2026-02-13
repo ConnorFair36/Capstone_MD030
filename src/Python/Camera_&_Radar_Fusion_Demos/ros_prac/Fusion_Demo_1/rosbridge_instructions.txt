@@ -1,0 +1,331 @@
+0) Windows prerequisites (one-time)
+A) Make sure WSL is installed (PowerShell as Admin)
+wsl --install
+
+
+If you need a specific Ubuntu:
+
+wsl --list --online
+wsl --install -d Ubuntu-22.04
+
+
+Restart Windows if it tells you to.
+
+B) Open Ubuntu (WSL)
+
+From Start Menu, open Ubuntu.
+
+1) WSL Ubuntu first-time setup
+A) Update packages
+sudo apt update
+sudo apt upgrade -y
+
+B) Confirm you’re on Ubuntu 22.04
+lsb_release -a
+
+
+You should see 22.04 / jammy.
+
+2) Install ROS2 Humble (WSL Ubuntu)
+A) Install prerequisites
+sudo apt install -y software-properties-common curl gnupg lsb-release
+
+B) Add ROS key
+sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+  -o /usr/share/keyrings/ros-archive-keyring.gpg
+
+C) Add ROS repository (jammy)
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+| sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+
+D) Install ROS2 Humble Desktop
+sudo apt update
+sudo apt install -y ros-humble-desktop
+
+E) Source ROS (for current terminal)
+source /opt/ros/humble/setup.bash
+
+F) Make ROS auto-source every new terminal (recommended)
+echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
+source ~/.bashrc
+
+3) Install colcon (build tool)
+sudo apt install -y python3-colcon-common-extensions
+
+
+Quick sanity check:
+
+colcon --help
+
+4) Create ROS2 workspace
+A) Make workspace + src
+mkdir -p ~/ros2_ws/src
+cd ~/ros2_ws
+
+5) Create the brain package (ament_python)
+A) Create package
+cd ~/ros2_ws/src
+ros2 pkg create --build-type ament_python brain_pkg
+
+B) Fix the “two-layer folder” structure (THIS was important)
+
+Make sure the python module folder exists:
+
+cd ~/ros2_ws/src/brain_pkg
+mkdir -p brain_pkg
+touch brain_pkg/__init__.py
+
+
+Now your structure should be:
+
+~/ros2_ws/src/brain_pkg/
+  package.xml
+  setup.py
+  resource/brain_pkg
+  brain_pkg/
+    __init__.py
+
+6) Create the brain node file
+A) Create brain_node.py
+nano ~/ros2_ws/src/brain_pkg/brain_pkg/brain_node.py
+
+
+Paste this minimal working node (this is basically what we tested):
+
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import Bool, Float32, String
+
+class BrainNode(Node):
+    def __init__(self):
+        super().__init__('brain_node')
+
+        self.person_detected = False
+        self.person_distance = 999.0  # default far away
+
+        self.create_subscription(Bool, '/person_detected', self.person_cb, 10)
+        self.create_subscription(Float32, '/person_distance', self.dist_cb, 10)
+
+        self.cmd_pub = self.create_publisher(String, '/vehicle_cmd', 10)
+
+        self.timer = self.create_timer(0.5, self.tick)
+
+    def person_cb(self, msg: Bool):
+        self.person_detected = msg.data
+
+    def dist_cb(self, msg: Float32):
+        self.person_distance = msg.data
+
+    def tick(self):
+        # Simple rule:
+        if self.person_detected and self.person_distance < 2.0:
+            cmd = "STOP"
+        else:
+            cmd = "GO"
+
+        out = String()
+        out.data = cmd
+        self.cmd_pub.publish(out)
+        self.get_logger().info(f"Decision: {cmd} (detected={self.person_detected}, dist={self.person_distance:.2f})")
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = BrainNode()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
+
+
+Save and exit nano:
+
+Ctrl+O, Enter
+
+Ctrl+X
+
+7) Register the node in setup.py
+
+Open setup.py:
+
+nano ~/ros2_ws/src/brain_pkg/setup.py
+
+
+Find entry_points and make sure it includes:
+
+entry_points={
+    'console_scripts': [
+        'brain_node = brain_pkg.brain_node:main',
+    ],
+},
+
+
+Save and exit.
+
+8) Build workspace
+cd ~/ros2_ws
+colcon build
+
+Source your workspace overlay (every terminal you want to run nodes in)
+source ~/ros2_ws/install/setup.bash
+
+
+(Optional) auto-source overlay every terminal:
+
+echo "source ~/ros2_ws/install/setup.bash" >> ~/.bashrc
+source ~/.bashrc
+
+9) Run the brain node (WSL)
+
+Terminal #1 (WSL):
+
+cd ~/ros2_ws
+source install/setup.bash
+ros2 run brain_pkg brain_node
+
+
+You should see repeating “Decision: GO …”
+
+10) Test topics manually (WSL)
+
+Open Terminal #2 (WSL):
+
+Publish person detected true
+source ~/ros2_ws/install/setup.bash
+ros2 topic pub /person_detected std_msgs/Bool "{data: true}"
+
+Publish distance 1.5 (should STOP)
+ros2 topic pub /person_distance std_msgs/Float32 "{data: 1.5}"
+
+Publish distance 3.0 (should GO)
+ros2 topic pub /person_distance std_msgs/Float32 "{data: 3.0}"
+
+
+This is the exact test you did successfully.
+
+11) Install + run rosbridge (WSL)
+A) Install rosbridge suite
+sudo apt update
+sudo apt install -y ros-humble-rosbridge-suite
+
+B) Start rosbridge websocket server
+
+Terminal #3 (WSL):
+
+source /opt/ros/humble/setup.bash
+ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+
+
+Keep this running. This is your “bridge server”.
+
+12) Windows side: Anaconda env setup
+
+Open Anaconda Prompt.
+
+A) Activate your env (example name)
+conda activate <your_env_name>
+
+B) Install roslibpy
+pip install roslibpy
+
+13) Windows publisher test (no camera)
+
+Create publish_test.py on Windows:
+
+import time
+import roslibpy
+
+client = roslibpy.Ros(host='localhost', port=9090)
+client.run()
+
+person_pub = roslibpy.Topic(client, '/person_detected', 'std_msgs/Bool')
+dist_pub   = roslibpy.Topic(client, '/person_distance', 'std_msgs/Float32')
+
+try:
+    while True:
+        person_pub.publish(roslibpy.Message({'data': True}))
+        dist_pub.publish(roslibpy.Message({'data': 1.5}))
+        time.sleep(2)
+
+        dist_pub.publish(roslibpy.Message({'data': 3.0}))
+        time.sleep(2)
+
+        person_pub.publish(roslibpy.Message({'data': False}))
+        time.sleep(2)
+
+finally:
+    person_pub.unadvertise()
+    dist_pub.unadvertise()
+    client.terminate()
+
+
+Run it:
+
+python publish_test.py
+
+
+Your WSL brain should flip STOP/GO.
+
+If localhost fails:
+
+In WSL run:
+
+hostname -I
+
+
+Then set host in Windows to that IP:
+
+client = roslibpy.Ros(host='172.xx.xx.xx', port=9090)
+
+14) Windows RealSense + MediaPipe publisher (your real test)
+VERY IMPORTANT RULE:
+
+✅ Close RealSense Viewer before running your code
+(or you’ll get “Frame didn’t arrive within 5000”)
+
+Then run your camera_to_rosbridge.py that:
+
+reads camera frames
+
+runs MediaPipe person detection
+
+computes distance
+
+publishes:
+
+/person_detected
+
+/person_distance
+
+When it’s working, the brain flips based on real camera data.
+
+15) What must be running for the full system to work (checklist)
+
+To get the full demo running, you need 3 processes:
+
+In WSL:
+
+rosbridge:
+
+ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+
+
+brain:
+
+ros2 run brain_pkg brain_node
+
+In Windows (Anaconda):
+
+camera publisher:
+
+python camera_to_rosbridge.py
+
+16) How to shut everything down
+
+In each WSL terminal: Ctrl + C
+
+In Windows script terminal: Ctrl + C
+
+If PC restarts → everything stops automatically (nothing persists running)
