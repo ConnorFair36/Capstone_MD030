@@ -44,7 +44,7 @@ This file must be located in the **same directory** as `radar_module.py`.
 
 Serial ports and baud rates are defined in `radar_module.py`:
 ```python
-CFG_PORT  = "COM4"
-DATA_PORT = "COM5"
+CFG_PORT  = "COM3"
+DATA_PORT = "COM4"
 BAUD_CFG  = 115200
 BAUD_DATA = 921600
