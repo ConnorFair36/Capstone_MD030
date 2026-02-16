@@ -1,47 +1,67 @@
-# mmWave Radar + Camera Sensor Fusion Capstone
+# Environment Setup Guide
 
-
-This repository contains the software developed for an engineering capstone
-project focused on indoor human detection using **sensor fusion** between an
-mmWave radar and a depth camera.
-
-The goal of the project is to improve robustness over single-sensor systems by
-combining:
-- radar-based motion detection and ranging.
-- vision-based person detection and distance estimation.
-
-The system is designed to handle common indoor challenges such as occlusion,
-poor lighting, and sensor noise.
+This guide explains how to start all required components for the system.
 
 ---
 
-## System Overview
+## Terminal 1 – WSL (Run Brain Node)
 
-The project is composed of three main components:
+Open a WSL terminal and run:
 
-- **mmWave Radar**
-    - Detects motion and provides range information
-    - Useful for detecting moving or partially occluded targets
+```bash
+cd ~/ros2_ws
+source install/setup.bash
+ros2 run brain_pkg brain_node
+```
 
-- **Camera (Intel RealSense + MediaPipe)**
-    - Detects people and estimates distance using depth data
-    - Provides reliable identification when line-of-sight is available
-
-- **Fusion System**
-    - Runs both sensors simultaneously
-    - Uses camera distance when a person is visible
-    - Uses radar motion to confirm movement or detect occluded targets
+Keep this terminal running.
 
 ---
 
-## Repository Structure
-- `Standalone_Demos/` – Standalone demos for individual sensors and algorithms
-- `Camera_&_Fusion_Demos/` – Integrated fusion system combining radar and camera inputs
-- `Raw_Data_Collection/` – Raw sensor datasets and logging scripts
-- `Machine_Learning/` – Planned ML development (documentation only)
+## Terminal 2 – WSL (Run ROS Bridge Server)
 
-See the README files inside each folder for setup and usage instructions.
+Open a second WSL terminal and run:
 
-## Hardware Used
-- mmWave radar sensor
-- Intel RealSense depth camera
+```bash
+source /opt/ros/humble/setup.bash
+ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+```
+
+Keep this terminal running.  
+This acts as the ROS bridge server.
+
+---
+
+##  Anaconda Terminal – Run Python Script
+
+Open an Anaconda terminal and run:
+
+```bash
+conda activate radar
+python your_script_name.py
+```
+
+If running multiple Python files:
+- Open a new Anaconda terminal for each script
+- Activate the environment (`conda activate radar`)
+- Run the script separately
+
+---
+
+## Recommended Startup Order
+
+1. Start Brain Node  
+2. Start ROS Bridge Server  
+3. Run Python script(s)
+
+---
+
+## Stopping the System
+
+To stop any running process, press:
+
+```
+Ctrl + C
+```
+
+in the corresponding terminal.
