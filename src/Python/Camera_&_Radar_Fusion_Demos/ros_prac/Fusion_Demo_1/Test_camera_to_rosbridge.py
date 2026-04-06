@@ -1,17 +1,28 @@
 import time
+import os
+import importlib.util
 import roslibpy
-import camera_module
+
+# Force-load camera_module.py from the same folder as this script
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CAMERA_MODULE_PATH = os.path.join(SCRIPT_DIR, "camera_module.py")
+
+spec = importlib.util.spec_from_file_location("camera_module", CAMERA_MODULE_PATH)
+camera_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(camera_module)
+
+print("Loaded camera_module from:", CAMERA_MODULE_PATH)
+print("Has initialize:", hasattr(camera_module, "initialize"))
+print("Has get_camera_data:", hasattr(camera_module, "get_camera_data"))
+print("Has shutdown:", hasattr(camera_module, "shutdown"))
 
 
 def main():
-    # 1) Start camera + MediaPipe
     camera_module.initialize()
 
-    # 2) Connect to rosbridge
     client = roslibpy.Ros(host='localhost', port=9090)
     client.run()
 
-    # Publishers
     person_pub = roslibpy.Topic(client, '/person_detected', 'std_msgs/Bool')
     dist_pub = roslibpy.Topic(client, '/person_distance', 'std_msgs/Float32')
     conf_pub = roslibpy.Topic(client, '/camera_confidence', 'std_msgs/Float32')
@@ -22,7 +33,6 @@ def main():
     pub_period = 1.0 / PUB_HZ
     last_pub = 0.0
 
-    # brief persistence to reduce flicker
     HOLD_SECS = 0.4
     last_valid_t = 0.0
     last_valid_person = False
@@ -36,6 +46,7 @@ def main():
             data = camera_module.get_camera_data()
 
             if data is None:
+                time.sleep(0.001)
                 continue
 
             if data == "QUIT":
@@ -53,12 +64,8 @@ def main():
             low_light = bool(data.get("low_light", False))
             bad_weather = bool(data.get("bad_weather", False))
 
-            if distance is None:
-                distance_val = 999.0
-            else:
-                distance_val = float(distance)
+            distance_val = 999.0 if distance is None else float(distance)
 
-            # Save latest valid person observation
             if person:
                 last_valid_t = now
                 last_valid_person = True
@@ -67,7 +74,6 @@ def main():
                 last_valid_low_light = low_light
                 last_valid_bad_weather = bad_weather
 
-            # Hold briefly to reduce flicker
             if (not person) and ((now - last_valid_t) < HOLD_SECS):
                 person = last_valid_person
                 distance_val = last_valid_distance
@@ -75,12 +81,10 @@ def main():
                 low_light = last_valid_low_light
                 bad_weather = last_valid_bad_weather
 
-            # After hold expires, reset cleanly
             if (not person) and ((now - last_valid_t) >= HOLD_SECS):
                 distance_val = 999.0
                 confidence = 0.0
 
-            # Publish
             person_pub.publish(roslibpy.Message({'data': bool(person)}))
             dist_pub.publish(roslibpy.Message({'data': float(distance_val)}))
             conf_pub.publish(roslibpy.Message({'data': float(confidence)}))
