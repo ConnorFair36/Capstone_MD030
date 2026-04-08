@@ -2,13 +2,12 @@
 #
 # RealSense + YOLO camera module using a custom trained model (best.pt).
 #
-# The model itself decides what objects to classify.
-# This module:
+# ROS-only version:
 #   - loads best.pt
 #   - runs inference on RealSense color frames
-#   - draws bounding boxes and labels
-#   - estimates depth at the box center
-#   - returns all detections for ROS use
+#   - estimates depth at each detection center
+#   - returns structured detections for the ROS bridge
+#   - does NOT open any display window
 #
 # Public functions:
 #   initialize(model_path="best.pt")
@@ -51,7 +50,7 @@ def initialize(model_path="best.pt"):
 
 
 def shutdown():
-    """Stop camera pipeline and close OpenCV windows."""
+    """Stop camera pipeline and clean up resources."""
     global pipeline, align, model
 
     try:
@@ -134,9 +133,8 @@ def get_camera_data():
     Read one frame and return camera data for the ROS bridge.
 
     Returns:
-      None   -> frame not ready
-      "QUIT" -> user pressed q
-      dict   -> camera data
+      None -> frame not ready
+      dict -> camera data
     """
     global pipeline, align, model
 
@@ -184,113 +182,38 @@ def get_camera_data():
 
             detections.append({
                 "label": label,
-                "confidence": conf,
-                "distance": dist,
-                "x1": x1,
-                "y1": y1,
-                "x2": x2,
-                "y2": y2,
-                "cx": cx,
-                "cy": cy,
+                "confidence": float(conf),
+                "distance": float(dist) if dist is not None else None,
+                "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                "center": [int(cx), int(cy)],
             })
 
-    primary = _get_primary_detection(detections)
+    primary = _get_primary_detection([
+        {
+            "label": d["label"],
+            "confidence": d["confidence"],
+            "distance": d["distance"]
+        }
+        for d in detections
+    ])
 
     primary_distance = None
     primary_conf = 0.0
     primary_label = None
-
-    # Draw all detections
-    for det in detections:
-        x1, y1, x2, y2 = det["x1"], det["y1"], det["x2"], det["y2"]
-        cx, cy = det["cx"], det["cy"]
-        label = det["label"]
-        conf = det["confidence"]
-        dist = det["distance"]
-
-        cv2.rectangle(color_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.circle(color_img, (cx, cy), 4, (0, 0, 255), -1)
-
-        dist_text = "N/A" if dist is None else f"{dist:.2f} m"
-        label_text = f"{label} {conf:.2f} | {dist_text}"
-
-        cv2.putText(
-            color_img,
-            label_text,
-            (x1, max(y1 - 10, 20)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (0, 255, 0),
-            2
-        )
 
     if primary is not None:
         primary_distance = primary["distance"]
         primary_conf = float(primary["confidence"])
         primary_label = primary["label"]
 
-        cv2.putText(
-            color_img,
-            f"Primary: {primary_label}",
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 255, 0),
-            2
-        )
-    else:
-        cv2.putText(
-            color_img,
-            "Primary: NONE",
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 0, 255),
-            2
-        )
-
-    cv2.putText(
-        color_img,
-        f"Low light: {low_light}",
-        (10, 65),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.65,
-        (0, 255, 255) if low_light else (255, 255, 255),
-        2
-    )
-
-    cv2.putText(
-        color_img,
-        f"Brightness: {brightness:.1f}",
-        (10, 95),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.65,
-        (255, 255, 255),
-        2
-    )
-
-    # Temporary local display for testing
-    cv2.imshow("RealSense + best.pt Detection", color_img)
-
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        return "QUIT"
-
     return {
         "detected": bool(len(detections) > 0),
         "label": primary_label,
         "distance": float(primary_distance) if primary_distance is not None else None,
         "confidence": float(primary_conf),
-        "detections": [
-            {
-                "label": d["label"],
-                "confidence": float(d["confidence"]),
-                "distance": float(d["distance"]) if d["distance"] is not None else None,
-                "bbox": [int(d["x1"]), int(d["y1"]), int(d["x2"]), int(d["y2"])],
-                "center": [int(d["cx"]), int(d["cy"])],
-            }
-            for d in detections
-        ],
+        "detections": detections,
         "low_light": bool(low_light),
+        "brightness": float(brightness),
         "bad_weather": bool(BAD_WEATHER_DEFAULT),
     }
 
@@ -298,12 +221,12 @@ def get_camera_data():
 if __name__ == "__main__":
     initialize("best.pt")
     try:
-        print("Press 'q' to quit")
+        print("Running camera module in ROS-only mode. Press Ctrl+C to stop.")
         while True:
             data = get_camera_data()
-            if data == "QUIT":
-                break
             if data is not None:
                 print(data)
+    except KeyboardInterrupt:
+        print("Stopping camera module...")
     finally:
         shutdown()
