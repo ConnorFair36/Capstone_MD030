@@ -1,29 +1,17 @@
 # camera_module.py
 #
-# Custom YOLO + RealSense camera module for ROS bridge use.
+# RealSense + YOLO camera module using a custom trained model (best.pt).
 #
-# Detects:
-#   - person
-#   - chair
-#   - laptop
-#   - phone / cell phone
-#
-# Returns:
-# {
-#   "person": bool,
-#   "chair": bool,
-#   "laptop": bool,
-#   "phone": bool,
-#   "distance": float or None,          # primary target distance
-#   "confidence": float,                # primary target confidence
-#   "label": str or None,               # primary target label
-#   "detections": list,                 # all accepted detections
-#   "low_light": bool,
-#   "bad_weather": bool
-# }
+# The model itself decides what objects to classify.
+# This module:
+#   - loads best.pt
+#   - runs inference on RealSense color frames
+#   - draws bounding boxes and labels
+#   - estimates depth at the box center
+#   - returns all detections for ROS use
 #
 # Public functions:
-#   initialize()
+#   initialize(model_path="best.pt")
 #   get_camera_data()
 #   shutdown()
 
@@ -42,12 +30,11 @@ BAD_WEATHER_DEFAULT = False
 
 
 def initialize(model_path="best.pt"):
-    """Load custom YOLO model and start RealSense streams."""
+    """Load YOLO model and start RealSense streams."""
     global pipeline, align, model
 
     print(f"Initializing YOLO model from: {model_path}")
     model = YOLO(model_path)
-
     print("Model class names:", model.names)
 
     print("Initializing RealSense camera...")
@@ -112,10 +99,6 @@ def _safe_depth(depth_frame, cx, cy, window=2):
     return float(np.median(samples))
 
 
-def _normalize_label(label):
-    return str(label).strip().lower()
-
-
 def _get_primary_detection(detections):
     """
     Pick one primary detection for summary output.
@@ -172,6 +155,7 @@ def get_camera_data():
     color_img = np.asanyarray(color_frame.get_data())
     low_light, brightness = _compute_low_light(color_img)
 
+    # Run YOLO on current frame
     results = model(color_img, verbose=False)
 
     detections = []
@@ -184,11 +168,7 @@ def get_camera_data():
             if conf < CONF_THRESHOLD:
                 continue
 
-            raw_label = model.names.get(cls_id, str(cls_id))
-
-            # Ignore classes outside our target set
-            if target_label is None:
-                continue
+            label = str(model.names.get(cls_id, cls_id))
 
             x1, y1, x2, y2 = map(int, box.xyxy[0])
 
@@ -203,8 +183,7 @@ def get_camera_data():
             dist = _safe_depth(depth_frame, cx, cy, window=2)
 
             detections.append({
-                "label": target_label,
-                "raw_label": str(raw_label),
+                "label": label,
                 "confidence": conf,
                 "distance": dist,
                 "x1": x1,
@@ -215,4 +194,116 @@ def get_camera_data():
                 "cy": cy,
             })
 
-    person_found = any(d["label"] ==
+    primary = _get_primary_detection(detections)
+
+    primary_distance = None
+    primary_conf = 0.0
+    primary_label = None
+
+    # Draw all detections
+    for det in detections:
+        x1, y1, x2, y2 = det["x1"], det["y1"], det["x2"], det["y2"]
+        cx, cy = det["cx"], det["cy"]
+        label = det["label"]
+        conf = det["confidence"]
+        dist = det["distance"]
+
+        cv2.rectangle(color_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.circle(color_img, (cx, cy), 4, (0, 0, 255), -1)
+
+        dist_text = "N/A" if dist is None else f"{dist:.2f} m"
+        label_text = f"{label} {conf:.2f} | {dist_text}"
+
+        cv2.putText(
+            color_img,
+            label_text,
+            (x1, max(y1 - 10, 20)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 255, 0),
+            2
+        )
+
+    if primary is not None:
+        primary_distance = primary["distance"]
+        primary_conf = float(primary["confidence"])
+        primary_label = primary["label"]
+
+        cv2.putText(
+            color_img,
+            f"Primary: {primary_label}",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2
+        )
+    else:
+        cv2.putText(
+            color_img,
+            "Primary: NONE",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 0, 255),
+            2
+        )
+
+    cv2.putText(
+        color_img,
+        f"Low light: {low_light}",
+        (10, 65),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (0, 255, 255) if low_light else (255, 255, 255),
+        2
+    )
+
+    cv2.putText(
+        color_img,
+        f"Brightness: {brightness:.1f}",
+        (10, 95),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (255, 255, 255),
+        2
+    )
+
+    # Temporary local display for testing
+    cv2.imshow("RealSense + best.pt Detection", color_img)
+
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+        return "QUIT"
+
+    return {
+        "detected": bool(len(detections) > 0),
+        "label": primary_label,
+        "distance": float(primary_distance) if primary_distance is not None else None,
+        "confidence": float(primary_conf),
+        "detections": [
+            {
+                "label": d["label"],
+                "confidence": float(d["confidence"]),
+                "distance": float(d["distance"]) if d["distance"] is not None else None,
+                "bbox": [int(d["x1"]), int(d["y1"]), int(d["x2"]), int(d["y2"])],
+                "center": [int(d["cx"]), int(d["cy"])],
+            }
+            for d in detections
+        ],
+        "low_light": bool(low_light),
+        "bad_weather": bool(BAD_WEATHER_DEFAULT),
+    }
+
+
+if __name__ == "__main__":
+    initialize("best.pt")
+    try:
+        print("Press 'q' to quit")
+        while True:
+            data = get_camera_data()
+            if data == "QUIT":
+                break
+            if data is not None:
+                print(data)
+    finally:
+        shutdown()
