@@ -1,12 +1,23 @@
 # camera_module.py
 #
-# YOLO + RealSense camera module for ROS bridge use.
+# Custom YOLO + RealSense camera module for ROS bridge use.
+#
+# Detects:
+#   - person
+#   - chair
+#   - laptop
+#   - phone / cell phone
 #
 # Returns:
 # {
 #   "person": bool,
-#   "distance": float or None,
-#   "confidence": float,
+#   "chair": bool,
+#   "laptop": bool,
+#   "phone": bool,
+#   "distance": float or None,          # primary target distance
+#   "confidence": float,                # primary target confidence
+#   "label": str or None,               # primary target label
+#   "detections": list,                 # all accepted detections
 #   "low_light": bool,
 #   "bad_weather": bool
 # }
@@ -30,12 +41,14 @@ CONF_THRESHOLD = 0.50
 BAD_WEATHER_DEFAULT = False
 
 
-def initialize():
-    """Load YOLO model and start RealSense streams."""
+def initialize(model_path="best.pt"):
+    """Load custom YOLO model and start RealSense streams."""
     global pipeline, align, model
 
-    print("Initializing YOLO model...")
-    model = YOLO("yolov8n.pt")
+    print(f"Initializing YOLO model from: {model_path}")
+    model = YOLO(model_path)
+
+    print("Model class names:", model.names)
 
     print("Initializing RealSense camera...")
     pipeline = rs.pipeline()
@@ -99,14 +112,48 @@ def _safe_depth(depth_frame, cx, cy, window=2):
     return float(np.median(samples))
 
 
+def _normalize_label(label):
+    return str(label).strip().lower()
+
+
+def _get_primary_detection(detections):
+    """
+    Pick one primary detection for summary output.
+    Priority:
+      1) valid depth
+      2) closer distance
+      3) higher confidence
+    """
+    if not detections:
+        return None
+
+    best = None
+    best_metric = None
+
+    for det in detections:
+        dist = det["distance"]
+        conf = det["confidence"]
+
+        if dist is None:
+            metric = (1, -conf)
+        else:
+            metric = (0, dist, -conf)
+
+        if best is None or metric < best_metric:
+            best = det
+            best_metric = metric
+
+    return best
+
+
 def get_camera_data():
     """
     Read one frame and return camera data for the ROS bridge.
 
     Returns:
-      None -> frame not ready
+      None   -> frame not ready
       "QUIT" -> user pressed q
-      dict -> camera data
+      dict   -> camera data
     """
     global pipeline, align, model
 
@@ -125,19 +172,22 @@ def get_camera_data():
     color_img = np.asanyarray(color_frame.get_data())
     low_light, brightness = _compute_low_light(color_img)
 
-    # Run YOLO
     results = model(color_img, verbose=False)
 
-    best_person = None
-    best_metric = None
+    detections = []
 
     for r in results:
         for box in r.boxes:
-            cls = int(box.cls[0])
+            cls_id = int(box.cls[0])
             conf = float(box.conf[0])
 
-            # COCO class 0 = person
-            if cls != 0 or conf < CONF_THRESHOLD:
+            if conf < CONF_THRESHOLD:
+                continue
+
+            raw_label = model.names.get(cls_id, str(cls_id))
+
+            # Ignore classes outside our target set
+            if target_label is None:
                 continue
 
             x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -152,118 +202,17 @@ def get_camera_data():
 
             dist = _safe_depth(depth_frame, cx, cy, window=2)
 
-            # Skip invalid depth for primary selection if you want tighter behavior
-            # but still allow fallback if needed.
-            if dist is None:
-                metric = (1, -conf)   # worse than valid depth
-            else:
-                metric = (0, dist)    # prefer valid/closer person
+            detections.append({
+                "label": target_label,
+                "raw_label": str(raw_label),
+                "confidence": conf,
+                "distance": dist,
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+                "cx": cx,
+                "cy": cy,
+            })
 
-            if best_person is None or metric < best_metric:
-                best_metric = metric
-                best_person = {
-                    "x1": x1,
-                    "y1": y1,
-                    "x2": x2,
-                    "y2": y2,
-                    "cx": cx,
-                    "cy": cy,
-                    "distance": dist,
-                    "confidence": conf,
-                }
-
-    person_found = best_person is not None
-    person_distance = None
-    person_conf = 0.0
-
-    if person_found:
-        x1 = best_person["x1"]
-        y1 = best_person["y1"]
-        x2 = best_person["x2"]
-        y2 = best_person["y2"]
-        cx = best_person["cx"]
-        cy = best_person["cy"]
-        person_distance = best_person["distance"]
-        person_conf = float(best_person["confidence"])
-
-        cv2.rectangle(color_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.circle(color_img, (cx, cy), 5, (0, 0, 255), -1)
-
-        dist_text = "N/A" if person_distance is None else f"{person_distance:.2f} m"
-        label = f"Person {person_conf:.2f} | {dist_text}"
-        cv2.putText(
-            color_img,
-            label,
-            (x1, max(y1 - 10, 20)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 0),
-            2
-        )
-
-        cv2.putText(
-            color_img,
-            "Person: DETECTED",
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 255, 0),
-            2
-        )
-    else:
-        cv2.putText(
-            color_img,
-            "Person: NOT DETECTED",
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 0, 255),
-            2
-        )
-
-    cv2.putText(
-        color_img,
-        f"Low light: {low_light}",
-        (10, 65),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (0, 255, 255) if low_light else (255, 255, 255),
-        2
-    )
-
-    cv2.putText(
-        color_img,
-        f"Brightness: {brightness:.1f}",
-        (10, 95),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (255, 255, 255),
-        2
-    )
-
-    cv2.imshow("RealSense + YOLO Person Detection", color_img)
-
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        return "QUIT"
-
-    return {
-        "person": bool(person_found),
-        "distance": float(person_distance) if person_distance is not None else None,
-        "confidence": float(person_conf),
-        "low_light": bool(low_light),
-        "bad_weather": bool(BAD_WEATHER_DEFAULT),
-    }
-
-
-if __name__ == "__main__":
-    initialize()
-    try:
-        print("Press 'q' to quit")
-        while True:
-            data = get_camera_data()
-            if data == "QUIT":
-                break
-            if data is not None:
-                print(data)
-    finally:
-        shutdown()
+    person_found = any(d["label"] ==
