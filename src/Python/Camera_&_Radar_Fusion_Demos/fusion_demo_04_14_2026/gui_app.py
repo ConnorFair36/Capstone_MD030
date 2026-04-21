@@ -1,5 +1,6 @@
 import base64
 import json
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -73,6 +74,9 @@ class AppState:
     show_radar_match_text: bool = True
     show_camera_velocity: bool = False
     show_camera_velocity_components: bool = False
+
+    show_bev_velocity_arrows: bool = True
+    show_bev_camera_detections: bool = True
 
     show_person: bool = True
     show_backpack: bool = True
@@ -272,6 +276,123 @@ def attach_radar_to_detections(detections: list[dict[str, Any]], proj_points: li
     return out
 
 
+BEV_W = 420
+BEV_H = 420
+BEV_X_RANGE = 5.0
+BEV_Y_RANGE = 10.0
+BEV_BG = (20, 20, 20)
+BEV_GRID = (50, 50, 50)
+BEV_ARROW_SCALE = 18.0
+
+R_CAM_TO_RADAR = R_RADAR_TO_CAM.T
+T_CAM_TO_RADAR = -R_CAM_TO_RADAR @ T_RADAR_TO_CAM
+
+
+def bev_project(x_m: float, y_m: float) -> tuple[int, int] | None:
+    """Map radar-frame (x, y) metres to BEV canvas pixel coords.
+
+    Origin (radar) is at bottom-centre; +y goes up (forward from radar).
+    Returns None when the point falls outside the visible area.
+    """
+    px = int(round((x_m / BEV_X_RANGE + 1.0) * 0.5 * BEV_W))
+    py = int(round((1.0 - y_m / BEV_Y_RANGE) * BEV_H))
+    if 0 <= px < BEV_W and 0 <= py < BEV_H:
+        return (px, py)
+    return None
+
+
+class BirdEyeViewWindow(QMainWindow):
+    def __init__(self, state: AppState):
+        super().__init__()
+        self.state = state
+        self.setWindowTitle("Bird's-Eye View")
+        self.resize(BEV_W + 40, BEV_H + 60)
+
+        root = QWidget()
+        self.setCentralWidget(root)
+        layout = QVBoxLayout(root)
+        self.image_label = QLabel("Waiting for radar data")
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setMinimumSize(BEV_W, BEV_H)
+        layout.addWidget(self.image_label)
+
+    def _draw_grid(self, img: np.ndarray):
+        for ym in range(1, int(BEV_Y_RANGE) + 1):
+            pt = bev_project(0.0, float(ym))
+            if pt is None:
+                continue
+            cv2.line(img, (0, pt[1]), (BEV_W - 1, pt[1]), BEV_GRID, 1, cv2.LINE_AA)
+            cv2.putText(img, f"{ym}m", (4, pt[1] - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (120, 120, 120), 1, cv2.LINE_AA)
+
+        for xm_int in range(-int(BEV_X_RANGE) + 1, int(BEV_X_RANGE)):
+            pt = bev_project(float(xm_int), 0.0)
+            if pt is None:
+                continue
+            cv2.line(img, (pt[0], 0), (pt[0], BEV_H - 1), BEV_GRID, 1, cv2.LINE_AA)
+
+        origin = bev_project(0.0, 0.0)
+        if origin:
+            cv2.drawMarker(img, origin, (0, 200, 200), cv2.MARKER_TRIANGLE_UP, 14, 2, cv2.LINE_AA)
+            cv2.putText(img, "RADAR", (origin[0] + 10, origin[1] - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 200, 200), 1, cv2.LINE_AA)
+
+    def refresh(self):
+        img = np.full((BEV_H, BEV_W, 3), BEV_BG, dtype=np.uint8)
+        self._draw_grid(img)
+
+        if self.state.show_bev_camera_detections:
+            for det in visible_detections(self.state):
+                xyz = det.get("xyz")
+                if xyz is None or len(xyz) != 3:
+                    continue
+                cam = np.array(xyz, dtype=np.float32)
+                radar_pos = R_CAM_TO_RADAR @ cam + T_CAM_TO_RADAR
+                pt = bev_project(float(radar_pos[0]), float(radar_pos[1]))
+                if pt is None:
+                    continue
+                color = tuple(det.get("color", [0, 255, 0]))
+                cv2.rectangle(img, (pt[0] - 5, pt[1] - 5), (pt[0] + 5, pt[1] + 5), color, 2, cv2.LINE_AA)
+                label = det.get("label", "")
+                if label:
+                    cv2.putText(img, label, (pt[0] + 8, pt[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.34, color, 1, cv2.LINE_AA)
+
+        for rp in self.state.radar_points:
+            try:
+                x = float(rp["x"])
+                y = float(rp["y"])
+                v = float(rp.get("v", 0.0))
+            except Exception:
+                continue
+            pt = bev_project(x, y)
+            if pt is None:
+                continue
+            color = velocity_to_color(v)
+            cv2.circle(img, pt, 5, color, -1, cv2.LINE_AA)
+
+            if self.state.show_bev_velocity_arrows and abs(v) > 0.05:
+                dist_xy = math.sqrt(x * x + y * y)
+                if dist_xy < 1e-6:
+                    continue
+                vx = v * x / dist_xy
+                vy = v * y / dist_xy
+                tip = bev_project(x + vx * BEV_ARROW_SCALE / BEV_X_RANGE,
+                                  y + vy * BEV_ARROW_SCALE / BEV_Y_RANGE)
+                if tip:
+                    cv2.arrowedLine(img, pt, tip, color, 2, cv2.LINE_AA, tipLength=0.3)
+
+        legend_y = 14
+        for label, color in [("Approaching", (0, 0, 255)), ("Stationary", (255, 255, 255)), ("Moving Away", (255, 0, 0))]:
+            cv2.circle(img, (BEV_W - 100, legend_y), 5, color, -1)
+            cv2.putText(img, label, (BEV_W - 90, legend_y + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.32, color, 1, cv2.LINE_AA)
+            legend_y += 18
+
+        cv2.putText(img, f"Pts: {len(self.state.radar_points)}", (8, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1, cv2.LINE_AA)
+
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        qimg = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format.Format_RGB888)
+        pix = QPixmap.fromImage(qimg)
+        self.image_label.setPixmap(pix.scaled(self.image_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+
 class DashboardWindow(QMainWindow):
     def __init__(self, state: AppState):
         super().__init__()
@@ -370,11 +491,13 @@ class DashboardWindow(QMainWindow):
         self.cb_show_radar_summary = self._make_checkbox("Show Radar Summary Box", "show_radar_summary_box")
         self.cb_show_radar_points = self._make_checkbox("Show Projected Radar Points", "show_projected_radar_points")
         self.cb_show_radar_text = self._make_checkbox("Show Radar Match Text", "show_radar_match_text")
+        self.cb_show_bev_arrows = self._make_checkbox("BEV Velocity Arrows", "show_bev_velocity_arrows")
+        self.cb_show_bev_cam = self._make_checkbox("BEV Camera Detections", "show_bev_camera_detections")
         for w in [
             self.cb_show_boxes, self.cb_show_labels, self.cb_show_distance, self.cb_show_confidence,
             self.cb_show_center, self.cb_show_legend, self.cb_show_none, self.cb_show_cam_vel,
             self.cb_show_cam_vel_comp, self.cb_show_radar_summary, self.cb_show_radar_points,
-            self.cb_show_radar_text,
+            self.cb_show_radar_text, self.cb_show_bev_arrows, self.cb_show_bev_cam,
         ]:
             layout.addWidget(w)
         return box
@@ -575,8 +698,10 @@ class FusionApp:
         self.ros = RosListener(self.state)
         self.dashboard = DashboardWindow(self.state)
         self.live = LiveViewWindow(self.state)
+        self.bev = BirdEyeViewWindow(self.state)
         self.dashboard.show()
         self.live.show()
+        self.bev.show()
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.refresh)
@@ -586,6 +711,7 @@ class FusionApp:
     def refresh(self):
         self.dashboard.refresh()
         self.live.refresh()
+        self.bev.refresh()
 
     def run(self):
         return self.qt_app.exec()

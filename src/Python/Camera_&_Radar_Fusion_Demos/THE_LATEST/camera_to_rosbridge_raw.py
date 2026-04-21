@@ -1,11 +1,11 @@
 import time
 import roslibpy
-import camera_module
+import camera_module_raw
 import numpy as np
 
 def main():
     # 1) Start camera + mediapipe
-    camera_module.initialize()
+    camera_module_raw.initialize()
 
     # 2) Connect to rosbridge (WSL)
     client = roslibpy.Ros(host='localhost', port=9090)
@@ -27,7 +27,7 @@ def main():
     try:
         while True:
             # Get camera data and the raw frame
-            data = camera_module.get_camera_data()
+            data = camera_module_raw.get_camera_data()
             if data is None:
                 continue
             if data == "QUIT":
@@ -57,8 +57,8 @@ def main():
             # or we can access the pipeline directly here
             
             # Get fresh frame for raw data
-            frames = camera_module.pipeline.wait_for_frames()
-            aligned = camera_module.align.process(frames)
+            frames = camera_module_raw.pipeline.wait_for_frames()
+            aligned = camera_module_raw.align.process(frames)
             color_frame = aligned.get_color_frame()
             
             if color_frame:

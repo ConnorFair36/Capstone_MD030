@@ -23,14 +23,15 @@ DETECT_CLASSES = {
     67: ("Phone", (0, 255, 255)),
 }
 
+
+with open("./calibration.json", "r") as f:
+    CALIBRATION = json.load(f)
+
 # camera intrinsics used for 3D back-projection at detection center
-# these match the user's calibration.json color intrinsics
-COLOR_INTRINSICS = {
-    "fx": 641.60986328125,
-    "fy": 640.8302001953125,
-    "ppx": 650.4204711914062,
-    "ppy": 405.4923400878906,
-}
+COLOR_INTRINSICS = CALIBRATION["color_intrinsics"]
+
+DEPTH_INTRINSICS = CALIBRATION["depth_intrinsics"]
+depth_to_color_extrinsics_4x4 = np.array(CALIBRATION["depth_to_color_extrinsics_4x4"])
 
 _previous_tracks: dict[int, dict[str, Any]] = {}
 _previous_frame_t: float | None = None
@@ -42,7 +43,7 @@ def initialize(model_path: str = "yolo26n.pt") -> None:
     model = YOLO(model_path)
     pipeline = rs.pipeline()
     config = rs.config()
-    config.enable_stream(rs.stream.depth, 1280, 720, rs.format.z16, 30)
+    config.enable_stream(rs.stream.depth, 848, 480, rs.format.z16, 30)
     config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
     pipeline.start(config)
     align = rs.align(rs.stream.color)
@@ -72,23 +73,68 @@ def shutdown() -> None:
     _previous_frame_t = None
 
 
-def _safe_depth(depth_frame: rs.depth_frame, cx: int, cy: int, window: int = 2) -> float | None:
-    h = depth_frame.get_height()
-    w = depth_frame.get_width()
-    samples: list[float] = []
+def _safe_depth(depth_frame: np.array, cx: int, cy: int, window: int = 2) -> float | None:
 
-    for dy in range(-window, window + 1):
-        for dx in range(-window, window + 1):
-            px = max(0, min(cx + dx, w - 1))
-            py = max(0, min(cy + dy, h - 1))
-            d = depth_frame.get_distance(px, py)
-            if 0.1 <= d <= 20.0:
-                samples.append(float(d))
-
-    if not samples:
+    # create a window x window frame around our target pixel  
+    frame = depth_frame[max(cy-window, 0):cy+window+1, max(cx-window, 0):cx+window+1]
+    if not bool(frame.size):
         return None
-    return float(np.median(samples))
+    frame = frame.flatten()
+    frame = frame[(frame >= 0.1) & (frame <= 20.0)]
+    
+    if not frame.size:
+        return None
+    return float(np.median(frame))
 
+def depth_to_3d(depth_map: np.array, depth_intrinsics: dict):
+    """Converts the depth measurements from the depth camera into 3d points."""
+    h, w = depth_map.shape
+
+    #assert (h == depth_intrinsics['height']) and \
+    #       (w == depth_intrinsics['width'])
+    
+    cx, cy = depth_intrinsics['ppx'], depth_intrinsics['ppy']
+    fx, fy = depth_intrinsics['fx'], depth_intrinsics['fy']
+
+    x_map, y_map = np.meshgrid(range(w), range(h))
+
+    x_map = (x_map - cx) * depth_map / fx
+    y_map = (y_map - cy) * depth_map / fy
+    
+
+    xs, ys, zs = x_map.flatten(), y_map.flatten(), depth_map.flatten()
+    
+    msk = zs > 0
+
+    xs, ys, zs = xs[msk], ys[msk], zs[msk]
+
+    pts = np.stack([xs,ys,zs], axis=0)  
+
+    return pts
+
+def pts3d_to_img(pts, intrinsic_dict):
+ 
+    cx, cy = intrinsic_dict['ppx'], intrinsic_dict['ppy']
+    fx, fy = intrinsic_dict['fx'], intrinsic_dict['fy']
+    h, w = intrinsic_dict['height'], intrinsic_dict['width']
+    xs, ys, zs = pts[0,:], pts[1,:], pts[2,:]
+
+    x_pixels = fx * xs / zs + cx
+    y_pixels = fy * ys / zs + cy
+
+    msk_in = (x_pixels>=0) & (x_pixels<=w-1) & (y_pixels>=0) & (y_pixels<=h-1)
+
+    x_pixels, y_pixels, d_pixels = x_pixels[msk_in], y_pixels[msk_in], zs[msk_in]
+
+    return x_pixels, y_pixels, d_pixels
+
+def transform_pts(trans_matrix, p0):
+    """Transforms the depth point origin into the camera's origin."""
+    p0 = p0.astype(float)
+    p1 = np.dot(trans_matrix, np.vstack((p0, np.ones(p0.shape[1],dtype=float))))
+    p1 = p1[:3,:]
+    
+    return p1
 
 def _img_to_pts3d(x_pixel: int, y_pixel: int, depth_m: float) -> list[float]:
     cx, cy = COLOR_INTRINSICS["ppx"], COLOR_INTRINSICS["ppy"]
@@ -99,6 +145,18 @@ def _img_to_pts3d(x_pixel: int, y_pixel: int, depth_m: float) -> list[float]:
     z_pts = depth_m
     return [float(x_pts), float(y_pts), float(z_pts)]
 
+def _transform_depth_to_img(raw_depth: np.array) -> np.array:
+    raw_depth *= CALIBRATION["depth_scale_m_per_unit"]
+    depth_frame = depth_to_3d(raw_depth, DEPTH_INTRINSICS)
+    depth_frame = transform_pts(depth_to_color_extrinsics_4x4, depth_frame)
+    x_px, y_px, d_px = pts3d_to_img(depth_frame, COLOR_INTRINSICS)
+    h_c = COLOR_INTRINSICS["height"]
+    w_c = COLOR_INTRINSICS["width"]
+    depth_color_img = np.zeros((h_c, w_c), dtype=np.float32)
+    xi = np.clip(np.round(x_px).astype(int), 0, w_c - 1)
+    yi = np.clip(np.round(y_px).astype(int), 0, h_c - 1)
+    depth_color_img[yi, xi] = d_px
+    return depth_color_img
 
 def _compute_velocity(track_id: int | None, xyz: list[float] | None, now_t: float) -> tuple[list[float] | None, float | None]:
     global _previous_tracks
@@ -152,12 +210,16 @@ def get_camera_data() -> dict[str, Any] | None:
         raise RuntimeError("Camera module not initialized. Call initialize() first.")
 
     frames = pipeline.wait_for_frames()
-    aligned_frames = align.process(frames)
+    # aligned_frames = align.process(frames)
 
-    depth_frame = aligned_frames.get_depth_frame()
-    color_frame = aligned_frames.get_color_frame()
+    depth_frame = frames.get_depth_frame()
+    color_frame = frames.get_color_frame()
     if not depth_frame or not color_frame:
         return None
+
+    # transforms the origin for the depth map into the camera based on our measured intrinsics
+    raw_depth = np.asanyarray(depth_frame.get_data()).astype(np.float32)
+    depth_frame = _transform_depth_to_img(raw_depth)
 
     color_img = np.asanyarray(color_frame.get_data())
     now_t = time.time()

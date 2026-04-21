@@ -6,8 +6,8 @@ from collections import deque
 import numpy as np
 import serial
 
-CFG_PORT = "COM3"
-DATA_PORT = "COM4"
+CFG_PORT = "COM5"
+DATA_PORT = "COM6"
 BAUD_CFG = 115200
 BAUD_DATA = 921600
 CFG_FILE = "profile.cfg"

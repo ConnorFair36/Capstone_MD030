@@ -57,6 +57,10 @@ class BrainNode(Node):
             "v": np.array([])
         }
         self._last_radar_raw_t = 0.0
+        
+        # ---- NEW: Last 3 radar points ----
+        self.radar_last3 = []   # list of dicts: [{"x":..,"y":..,"z":..,"v":..}, ...]
+        self._last_radar_last3_t = 0.0
 
         # ---- SUBSCRIBERS (original) ----
         self.create_subscription(Bool, '/person_detected', self.person_cb, 10)
@@ -68,6 +72,7 @@ class BrainNode(Node):
         # ---- NEW SUBSCRIBERS (raw data) ----
         self.create_subscription(String, '/camera_raw', self.camera_raw_cb, 10)
         self.create_subscription(String, '/radar_raw', self.radar_raw_cb, 10)
+        self.create_subscription(String, '/radar_last3', self.radar_last3_cb, 10)
 
         # ---- PUBLISHER ----
         self.cmd_pub = self.create_publisher(String, '/vehicle_cmd', 10)
@@ -150,7 +155,22 @@ class BrainNode(Node):
             
         except Exception as e:
             self.get_logger().error(f"Error parsing radar_raw: {e}")
+    def radar_last3_cb(self, msg: String):
+    """
+    Receives JSON string containing:
+      { "points": [ {x,y,z,v}, ... ], "count": N }
+    """
+    try:
+        data = json.loads(msg.data)
+        self.radar_last3 = data.get("points", [])
+        self._last_radar_last3_t = time.monotonic()
 
+        self.get_logger().info(
+            f"Received radar_last3: count={len(self.radar_last3)}"
+        )
+
+    except Exception as e:
+        self.get_logger().error(f"Error parsing radar_last3: {e}")
     # ---------- Decision Logic ----------
     def tick(self):
         now = time.monotonic()
@@ -159,6 +179,7 @@ class BrainNode(Node):
         person_ok = (now - self._last_person_msg_t) <= self.PERSON_STALE_S
         dist_ok = (now - self._last_dist_msg_t) <= self.PERSON_STALE_S
         radar_ok = (now - self._last_radar_msg_t) <= self.RADAR_STALE_S
+        radar_last3_ok = (now - self._last_radar_last3_t) <= 1.0
 
         person = self.person_detected if person_ok else False
         dist = self.person_distance if dist_ok else 999.0
@@ -192,6 +213,7 @@ class BrainNode(Node):
             f"radar={radar_present} motion={radar_motion} | "
             f"camera_raw={'OK' if camera_raw_ok else 'STALE'} "
             f"radar_raw={'OK' if radar_raw_ok else 'STALE'}"
+            f"radar_last3={'OK' if radar_last3_ok else 'STALE'}"
         )
 
     # ---------- Helper Methods for Processing Raw Data ----------
@@ -207,6 +229,12 @@ class BrainNode(Node):
         now = time.monotonic()
         if (now - self._last_radar_raw_t) <= 1.0:
             return self.radar_points
+        return None
+    def get_radar_last3(self):
+        """Returns last 3 radar points or None if stale."""
+        now = time.monotonic()
+        if (now - self._last_radar_last3_t) <= 1.0:
+            return self.radar_last3
         return None
 
 
