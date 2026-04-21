@@ -6,3 +6,6 @@
 __pycache__/
 *.pyc
 .venv/
+
+# don't track model weights
+src/Python/Machine_Learning/*/weights/*.pt
