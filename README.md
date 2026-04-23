@@ -1,67 +1,63 @@
-# Environment Setup Guide
+# Capstone MD030 -- Camera + Radar Sensor Fusion
 
-This guide explains how to start all required components for the system.
+A senior design capstone project that fuses an Intel RealSense RGB-D camera with a TI mmWave radar for real-time pedestrian detection and autonomous vehicle safety. The system detects, classifies, and tracks objects, then issues `SAFE`, `CAUTION`, or `STOP` commands based on distance, velocity, and confidence from both sensors.
 
 ---
 
-## Terminal 1 – WSL (Run Brain Node)
-
-Open a WSL terminal and run:
+## Quick Start
 
 ```bash
-cd ~/ros2_ws
-source install/setup.bash
-ros2 run brain_pkg brain_node
+# 1. Start brain node + rosbridge in WSL (two terminals)
+# 2. Then in Windows/Anaconda terminals, from the src/ folder:
+python camera_to_rosbridge.py   # Terminal 3
+python radar_to_rosbridge.py    # Terminal 4
+python gui_app.py               # Terminal 5
 ```
 
-Keep this terminal running.
+See [Setup and Running](src/documentation/06_setup_and_running.md) for full instructions.
 
 ---
 
-## Terminal 2 – WSL (Run ROS Bridge Server)
+## Documentation
 
-Open a second WSL terminal and run:
+Full documentation lives in [`src/documentation/`](src/documentation/index.md):
 
-```bash
-source /opt/ros/humble/setup.bash
-ros2 launch rosbridge_server rosbridge_websocket_launch.xml
-```
-
-Keep this terminal running.  
-This acts as the ROS bridge server.
-
----
-
-##  Anaconda Terminal – Run Python Script
-
-Open an Anaconda terminal and run:
-
-```bash
-conda activate radar
-python your_script_name.py
-```
-
-If running multiple Python files:
-- Open a new Anaconda terminal for each script
-- Activate the environment (`conda activate radar`)
-- Run the script separately
+1. [Project Overview](src/documentation/01_project_overview.md) -- Goals, sensors, and what the system does
+2. [System Architecture](src/documentation/02_system_architecture.md) -- 4-process design and data flow
+3. [Math and Science](src/documentation/03_math_and_science.md) -- Radar processing, camera depth, 3D projection, YOLO, fusion theory
+4. [Code Guide](src/documentation/04_code_guide.md) -- File-by-file breakdown with every function and constant
+5. [ROS Topics Reference](src/documentation/05_ros_topics.md) -- All 14 topics with types and message examples
+6. [Setup and Running](src/documentation/06_setup_and_running.md) -- Prerequisites, dependencies, startup order
 
 ---
 
-## Recommended Startup Order
+## Repository Structure
 
-1. Start Brain Node  
-2. Start ROS Bridge Server  
-3. Run Python script(s)
+```
+Capstone_MD030/
+├── README.md              ← you are here
+├── src/                   ← production code
+│   ├── brain_node.py
+│   ├── camera_module.py
+│   ├── camera_to_rosbridge.py
+│   ├── gui_app.py
+│   ├── radar_module.py
+│   ├── radar_to_rosbridge.py
+│   ├── calibration.json
+│   ├── profile.cfg
+│   ├── yolo26n.pt
+│   └── documentation/
+└── experiments/           ← archived iterations and tools
+```
 
 ---
 
-## Stopping the System
+## Technology Stack
 
-To stop any running process, press:
-
-```
-Ctrl + C
-```
-
-in the corresponding terminal.
+| Component | Technology |
+|---|---|
+| Object detection | Ultralytics YOLO (YOLOv8-nano) |
+| Camera | Intel RealSense D400 (`pyrealsense2`) |
+| Radar | TI mmWave IWR-series (`pyserial`) |
+| Middleware | ROS 2 Humble + rosbridge |
+| GUI | PySide6 + OpenCV |

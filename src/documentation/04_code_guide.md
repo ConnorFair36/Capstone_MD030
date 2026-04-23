@@ -1,6 +1,8 @@
-# Fusion Demo Code Guide
+# Code Guide
 
-> **Folder:** `fusion_demo_04_21_2026/`
+[Back to Index](index.md) | Previous: [Math and Science](03_math_and_science.md) | Next: [ROS Topics Reference](05_ros_topics.md)
+
+> **Source folder:** `src/`
 > **Last updated:** April 21, 2026
 
 ---
@@ -8,18 +10,19 @@
 ## Table of Contents
 
 1. [System Architecture](#system-architecture)
-2. [How to Run](#how-to-run)
-3. [File Breakdown](#file-breakdown)
+2. [File Breakdown](#file-breakdown)
    - [camera_module.py](#camera_modulepy)
    - [camera_to_rosbridge.py](#camera_to_rosbridgepy)
    - [radar_module.py](#radar_modulepy)
    - [radar_to_rosbridge.py](#radar_to_rosbridgepy)
    - [brain_node.py](#brain_nodepy)
    - [gui_app.py](#gui_apppy)
-4. [ROS Topic Reference](#ros-topic-reference)
-5. [Data Structures](#data-structures)
-6. [Configuration Files](#configuration-files)
-7. [Key Constants](#key-constants)
+3. [Data Structures](#data-structures)
+4. [Configuration Files](#configuration-files)
+5. [Key Constants](#key-constants)
+
+For the full ROS topic reference, see [05_ros_topics.md](05_ros_topics.md).
+For setup and running instructions, see [06_setup_and_running.md](06_setup_and_running.md).
 
 ---
 
@@ -66,54 +69,6 @@ The system runs as **four independent processes** communicating over ROS topics 
 2. `radar_to_rosbridge` calls `radar_module.get_radar_data()` in a loop, publishes results to 5 ROS topics
 3. `brain_node` subscribes to camera + radar summary topics, fuses them into a vehicle command (`SAFE` / `CAUTION` / `STOP`), publishes to 2 topics
 4. `gui_app` subscribes to all 14 topics and renders 4 windows in real time
-
----
-
-## How to Run
-
-### Prerequisites
-
-- Python 3.10+
-- ROS 2 (for `brain_node.py`)
-- rosbridge running on `localhost:9090`
-- Intel RealSense camera connected via USB
-- TI mmWave radar connected via serial (COM5 config, COM6 data -- adjust in `radar_module.py`)
-
-### Python dependencies
-
-```
-opencv-python
-numpy
-pyrealsense2
-ultralytics
-pyserial
-roslibpy
-PySide6
-rclpy (comes with ROS 2)
-```
-
-### Startup order
-
-Run each in a **separate terminal**, from inside the `fusion_demo_04_21_2026/` folder:
-
-```bash
-# Terminal 1 -- Start rosbridge (if not already running)
-ros2 launch rosbridge_server rosbridge_websocket_launch.xml
-
-# Terminal 2 -- Camera bridge
-python camera_to_rosbridge.py
-
-# Terminal 3 -- Radar bridge
-python radar_to_rosbridge.py
-
-# Terminal 4 -- Brain node (ROS 2)
-python brain_node.py
-
-# Terminal 5 -- GUI
-python gui_app.py
-```
-
-The GUI can start before or after the bridges. It will show "Waiting" until data arrives.
 
 ---
 
@@ -329,39 +284,6 @@ The GUI transforms radar points from radar frame to camera frame using:
 - Then pinhole projection with camera intrinsics (`FX`, `FY`, `CX`, `CY`)
 
 This is only used for the Live Stream overlay. The BEV uses raw radar-frame coordinates directly.
-
----
-
-## ROS Topic Reference
-
-### Camera topics (published by camera_to_rosbridge)
-
-| Topic | Type | Content |
-|---|---|---|
-| `/camera_detected` | `std_msgs/Bool` | True if any object detected |
-| `/camera_label` | `std_msgs/String` | Primary detection label (e.g. "Person") |
-| `/camera_distance` | `std_msgs/Float32` | Primary detection depth in metres (999.0 if none) |
-| `/camera_confidence` | `std_msgs/Float32` | Primary detection confidence (0.0--1.0) |
-| `/camera_detections_json` | `std_msgs/String` | JSON array of all detection dicts |
-| `/camera_frame_b64` | `std_msgs/String` | Base64 JPEG of the color frame |
-| `/camera_depth_b64` | `std_msgs/String` | Base64 JPEG of the depth heatmap |
-
-### Radar topics (published by radar_to_rosbridge)
-
-| Topic | Type | Content |
-|---|---|---|
-| `/radar_detected` | `std_msgs/Bool` | True if valid points in ROI |
-| `/radar_distance` | `std_msgs/Float32` | Nearest target range in metres (999.0 if none) |
-| `/radar_motion` | `std_msgs/String` | `APPROACHING`, `MOVING_AWAY`, `STATIONARY`, or `NONE` |
-| `/radar_confidence` | `std_msgs/Float32` | Confidence score (0.0--1.0) |
-| `/radar_points_json` | `std_msgs/String` | JSON array of point dicts |
-
-### Brain topics (published by brain_node)
-
-| Topic | Type | Content |
-|---|---|---|
-| `/vehicle_cmd` | `std_msgs/String` | `SAFE`, `CAUTION`, or `STOP` |
-| `/fusion_debug` | `std_msgs/String` | Human-readable debug string with all sensor values and decision reason |
 
 ---
 
